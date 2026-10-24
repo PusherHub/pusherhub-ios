@@ -72,6 +72,7 @@ public final class PusherHub {
     private var publicKey = ""
     private var baseUrl = ""
     private var onNotificationClick: ((String) -> Void)?
+    private var onNotificationOpened: (([String: String]) -> Void)?
     private var initialized = false
 
     // UNUserNotificationCenter and Messaging each take exactly one delegate,
@@ -149,18 +150,28 @@ public final class PusherHub {
      * - Parameter onNotificationClick: optional — called instead of the
      *   SDK's default behavior (opening the link with UIApplication.open)
      *   when a tapped notification or in-app message carries a deep link.
+     * - Parameter onNotificationOpened: optional — called on every tap of a
+     *   PusherHub notification, whether the app was open, in the background
+     *   or closed, with the Custom Data it was sent with (empty if it had
+     *   none). Open the right screen from it, e.g. `data["campaign_id"]`.
+     *   Values arrive as text — `{"campaign_id": 232}` gives "232" — and a
+     *   nested object or list as its JSON. A tap that launched the app can
+     *   arrive before your first screen is up: in SwiftUI, set a published
+     *   property your views watch rather than presenting anything here.
      */
     public static func initialize(
         appKey: String,
         publicKey: String,
         baseUrl: String,
-        onNotificationClick: ((String) -> Void)? = nil
+        onNotificationClick: ((String) -> Void)? = nil,
+        onNotificationOpened: (([String: String]) -> Void)? = nil
     ) {
         let hub = shared
         hub.appKey = appKey
         hub.publicKey = publicKey
         hub.baseUrl = baseUrl.hasSuffix("/") ? String(baseUrl.dropLast()) : baseUrl
         hub.onNotificationClick = onNotificationClick
+        hub.onNotificationOpened = onNotificationOpened
 
         guard configureFirebaseIfNeeded() else { return }
         hub.initialized = true
@@ -253,8 +264,9 @@ public final class PusherHub {
      * Only needed if your app sets its own UNUserNotificationCenter delegate
      * after [initialize]: call this from your
      * userNotificationCenter(_:didReceive:withCompletionHandler:). Reports
-     * the open (and click-through, if the notification carried a deep link)
-     * and opens the deep link. Your own delegate's willPresent then also
+     * the open (and click-through, if the notification carried a deep link),
+     * hands its Custom Data to onNotificationOpened, and opens the deep
+     * link. Your own delegate's willPresent then also
      * decides whether pushes show while the app is open — PusherHub's
      * returns [.banner, .list, .sound, .badge].
      */
@@ -267,8 +279,9 @@ public final class PusherHub {
         let userInfo = response.notification.request.content.userInfo
         guard let notificationId = PusherHubJSON.string(userInfo["notification_id"]) else { return }
         let deepLink = PusherHubJSON.nonEmptyString(userInfo["deep_link"])
+        let data = PusherHubJSON.customData(userInfo)
 
-        Task { @MainActor in shared.notificationOpened(notificationId: notificationId, deepLink: deepLink) }
+        Task { @MainActor in shared.notificationOpened(notificationId: notificationId, deepLink: deepLink, data: data) }
     }
 
     /**
@@ -593,9 +606,10 @@ public final class PusherHub {
 
     // MARK: - Notification taps
 
-    private func notificationOpened(notificationId: String, deepLink: String?) {
+    private func notificationOpened(notificationId: String, deepLink: String?, data: [String: String]) {
         Self.log("Notification opened: \(notificationId)")
         trackOpen(notificationId: notificationId, deepLink: deepLink)
+        onNotificationOpened?(data)
         if let deepLink {
             openDeepLink(deepLink)
         }
@@ -1081,6 +1095,21 @@ private enum PusherHubJSON {
     nonisolated static func nonEmptyString(_ value: Any?) -> String? {
         guard let string = string(value), !string.isEmpty else { return nil }
         return string
+    }
+
+    /// A tapped notification's Custom Data: the push's data keys, without
+    /// PusherHub's own (notification_id, click_action, deep_link) and what
+    /// iOS and Firebase add (aps, fcm_options, gcm.*, google.*).
+    nonisolated static func customData(_ userInfo: [AnyHashable: Any]) -> [String: String] {
+        let skipped: Set<String> = ["notification_id", "click_action", "deep_link", "aps", "fcm_options", "from", "collapse_key"]
+        var data: [String: String] = [:]
+        for (key, value) in userInfo {
+            guard let key = key as? String, !skipped.contains(key),
+                  !key.hasPrefix("gcm."), !key.hasPrefix("google."),
+                  let text = string(value) else { continue }
+            data[key] = text
+        }
+        return data
     }
 
     nonisolated static func double(_ value: Any?) -> Double? {

@@ -9,6 +9,7 @@ Push notifications and in-app messages for your iPhone app, sent through your ow
 - Registers each iPhone with PusherHub, asks for the notification permission, and keeps its token up to date
 - Links a phone to your own user id with `login(externalId:)` — remembered across restarts until `logout()`
 - Reports notification opens and clicks
+- Hands your app each tapped notification's Custom Data, so you can open the right screen
 - Shows in-app messages in SwiftUI with `.pusherHubMessageHost()`
 - Images in notifications, with the included Notification Service Extension
 - Optional device details, and GPS-accurate state and city if you turn location on
@@ -91,6 +92,28 @@ struct YourApp: App {
 1. Xcode › *File › New › Target…* › **Notification Service Extension**, named `NotificationService`.
 2. Set its minimum iOS version to match your app.
 3. Replace the generated `NotificationService.swift` with [this one](NotificationService/NotificationService.swift).
+
+## Opening a screen when a notification is tapped
+
+Put your own data in **Custom Data** when you create a notification — say `{"campaign_id": "232"}` — and get it back on every tap, whether the app was open, in the background or closed.
+
+```swift
+@MainActor final class NotificationRouter: ObservableObject {
+    static let shared = NotificationRouter()
+    @Published var campaignId: String?   // open the campaign from your views when this changes
+}
+
+PusherHub.initialize(
+    appKey: "YOUR_APP_KEY",
+    publicKey: "YOUR_PUBLIC_KEY",
+    baseUrl: "https://pusherhub.com/api",
+    onNotificationOpened: { data in
+        NotificationRouter.shared.campaignId = data["campaign_id"]
+    }
+)
+```
+
+Every value arrives as text (`"232"`). A tap that opened a closed app can arrive before your first view is up, so set something your views watch rather than presenting a screen here.
 
 ## Signed-in users
 
